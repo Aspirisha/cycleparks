@@ -21,12 +21,15 @@ import numpy as np
 import os
 import urllib.request 
 import yaml
-from typing import List
+from functools import partial
+from typing import List, Dict
 
 from sklearn.neighbors import BallTree
 
 from telegram import BotCommand, Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+
+from analytics import flush_logs, log_command
 
 
 class LocationsInfo:
@@ -117,6 +120,7 @@ async def limit_locations(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def show_nearest_cycleparks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.application.create_task(log_command(update.effective_user.id, "show_nearest_cycleparks"))
     user_location = update.message.location
     if not user_location:
         logger.info('Received no user location: %s', user_location)
@@ -142,13 +146,14 @@ async def show_nearest_cycleparks(update: Update, context: ContextTypes.DEFAULT_
         if image_url is not None:
             await context.bot.send_photo(chat_id=update.effective_chat.id, photo=image_url)
 
-async def setup_commands(app):
+async def setup_commands(app, postgres_config: Dict):
     commands = [
         BotCommand("start", "Start the bot"),
         BotCommand("limit", "Set limit of locations to show"),
         BotCommand("help", "Show help"),
     ]
     await app.bot.set_my_commands(commands)
+    app.create_task(flush_logs(postgres_config))
 
 
 def main() -> None:
@@ -159,7 +164,10 @@ def main() -> None:
     logger.info('Read cycle parks data: %d entries', len(LocationsInfo.location_data))
     
     # Create the Application and pass it your bot's token.
-    application = Application.builder().token(config['token']).post_init(setup_commands).build()
+    application = Application.builder() \
+      .token(config['token']) \
+      .post_init(partial(setup_commands, postgres_config=config['postgres'])) \
+      .build()
     # on different commands - answer in Telegram
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("limit", limit_locations))

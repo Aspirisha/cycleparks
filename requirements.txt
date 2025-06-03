@@ -1,3 +1,5 @@
 python-telegram-bot
 pyyaml
 scikit-learn
+asyncpg
+redis
