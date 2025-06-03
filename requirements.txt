@@ -1,5 +1,5 @@
-python-telegram-bot
-pyyaml
-scikit-learn
-asyncpg
-redis
+python-telegram-bot==22.1
+PyYAML==6.0.2
+scikit-learn==1.6.1
+asyncpg==0.30.0
+redis==6.2.0
