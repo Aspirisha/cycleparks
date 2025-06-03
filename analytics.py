@@ -9,6 +9,7 @@ r = redis.Redis()
 DUMP_FREQUENCY = 10  # seconds, how often to flush logs to the database
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+
 async def log_command(user_id: int, command: str):
     now = datetime.now().strftime(TIME_FORMAT)
     await r.incr(f"command_usage:{command}")
@@ -18,9 +19,9 @@ async def log_command(user_id: int, command: str):
 
 async def flush_logs(postgres_config: Dict):
     conn = await asyncpg.connect(
-        user=postgres_config['user'], 
-        password=postgres_config['password'], 
-        database=postgres_config['database'], 
+        user=postgres_config['user'],
+        password=postgres_config['password'],
+        database=postgres_config['database'],
         host=postgres_config['host'])
     while True:
         log = await r.lpop("request_log_queue")
