@@ -147,6 +147,15 @@ async def limit_locations(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             TextMessage(chat_id=update.effective_chat.id,
                         text=f"❌ That doesn't look like a valid number. Locations limit is {current_limit}."))
 
+def ordinal(n):
+    if str(n)[-1] == '1':
+        return str(n) + 'st'
+    elif str(n)[-1] == '2':
+        return str(n) + 'nd'
+    elif str(n)[-1] == '3':
+        return str(n) + 'rd'
+    else:
+        return str(n) + 'th'
 
 
 async def show_nearest_cycleparks(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -176,7 +185,7 @@ async def show_nearest_cycleparks(update: Update, context: ContextTypes.DEFAULT_
         message_queue.put_nowait(
             TextMessage(
                 chat_id=update.effective_chat.id,
-                text=f"{i+1}st nearest cycle parking is within {distance:.0f} meters:\n"))
+                text=f"{ordinal(i+1)} nearest cycle parking is within {distance:.0f} meters:\n"))
         coords = parking_info["geometry"]["coordinates"]
         message_queue.put_nowait(
             LocationMessage(
