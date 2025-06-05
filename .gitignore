@@ -3,3 +3,5 @@ python-env
 config.yml
 cycleparks.json
 sync_config.jsonc
+.pytest_cache
+.pytest.ini.swp
