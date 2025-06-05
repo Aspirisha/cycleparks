@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from asyncio import Queue
 from telegram import Bot, InputMediaPhoto, ReplyKeyboardMarkup
 
+from analytics import log_send_failure
+
 
 message_queue = Queue()
 logger = logging.getLogger(__name__)
@@ -49,5 +51,6 @@ async def message_sender(bot: Bot):
                                         longitude=msg.longitude)
         except Exception as e:
             logger.error("Send failed: %s", e)
+            await log_send_failure(type(msg).__name__, str(e))
         finally:
             await asyncio.sleep(1 / 30)  # avoid rate limit

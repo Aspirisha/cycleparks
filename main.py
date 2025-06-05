@@ -15,6 +15,7 @@ Press Ctrl-C on the command line or send a signal to the process to stop the bot
 
 """
 
+import asyncpg
 import json
 import logging
 import numpy as np
@@ -29,7 +30,7 @@ from sklearn.neighbors import BallTree
 from telegram import BotCommand, Update, KeyboardButton, ReplyKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from analytics import flush_logs, log_command
+from analytics import flush_logs, log_command, flush_failures_to_postgres
 from message_queue import message_sender, message_queue, TextMessage, LocationMessage, MediaGroupMessage
 
 
@@ -204,7 +205,13 @@ async def setup_commands(app, postgres_config: Dict):
         BotCommand("help", "Show help"),
     ]
     await app.bot.set_my_commands(commands)
-    app.create_task(flush_logs(postgres_config))
+    db_pool = await asyncpg.create_pool(
+        user=postgres_config['user'],
+        password=postgres_config['password'],
+        database=postgres_config['database'],
+        host=postgres_config['host'])
+    app.create_task(flush_logs(db_pool))
+    app.create_task(flush_failures_to_postgres(db_pool))
     app.create_task(message_sender(app.bot))
 
 

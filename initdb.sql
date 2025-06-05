@@ -15,3 +15,11 @@ CREATE TABLE command_stats (
     command TEXT NOT NULL,
     count INTEGER NOT NULL
 );
+
+CREATE TABLE send_failures (
+    id SERIAL PRIMARY KEY,
+    message_type TEXT NOT NULL,
+    error_message TEXT NOT NULL,
+    count INTEGER NOT NULL,
+    timestamp TIMESTAMPTZ DEFAULT NOW()
+);

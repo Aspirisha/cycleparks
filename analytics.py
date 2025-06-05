@@ -1,13 +1,15 @@
 import asyncio
 import asyncpg
+import logging
 import redis.asyncio as redis
 from datetime import datetime
-from typing import Dict
 
 r = redis.Redis()
+logger = logging.getLogger(__name__)
 
 DUMP_FREQUENCY = 10  # seconds, how often to flush logs to the database
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+SEND_FAILURE_TIME_FORMAT = "%Y-%m-%d-%H:%M"
 
 
 async def log_command(user_id: int, command: str):
@@ -17,20 +19,53 @@ async def log_command(user_id: int, command: str):
     await r.rpush("request_log_queue", f"{now}|{user_id}|{command}")
 
 
-async def flush_logs(postgres_config: Dict):
-    conn = await asyncpg.connect(
-        user=postgres_config['user'],
-        password=postgres_config['password'],
-        database=postgres_config['database'],
-        host=postgres_config['host'])
+async def log_send_failure(msg_type, error_message):
+    now = datetime.now()
+    bucket = now.strftime(SEND_FAILURE_TIME_FORMAT)
+    key = f"failures|{bucket}|{msg_type}|{error_message[:50]}"
+    await r.incr(key)
+    await r.expire(key, 86400)  # 24 hours
+
+
+async def _flush_failures_to_postgres(db_pool: asyncpg.Pool):
+    keys = await r.keys("failures|*")
+    async with db_pool.acquire() as conn:
+      results = []
+      for key in keys:
+          count = int(await r.get(key))
+          # Parse key: failures|2025-06-04-17:30|photo|RateLimitExceeded
+          parts = key.decode().split("|")
+          timestamp = datetime.strptime(parts[1], SEND_FAILURE_TIME_FORMAT)
+          msg_type = parts[2]
+          error = parts[3]
+          results.append((timestamp, msg_type, error, count))
+          await r.delete(key)
+      logger.info("Flushing %d failures to Postgres", len(results))
+      await conn.executemany(
+          "INSERT INTO send_failures (timestamp, message_type, error_message, count) VALUES ($1, $2, $3, $4)",
+          results
+      )
+
+
+async def flush_failures_to_postgres(db_pool: asyncpg.Pool):
+    while True:
+        try:
+            await _flush_failures_to_postgres(db_pool)
+        except Exception as e:
+            logger.error("Flushing failed: %s", e)
+        await asyncio.sleep(60)  # every minute
+
+
+async def flush_logs(db_pool: asyncpg.Pool):
     while True:
         log = await r.lpop("request_log_queue")
-        if log:
+        if not log:
+            await asyncio.sleep(DUMP_FREQUENCY)
+            continue
+        async with db_pool.acquire() as conn:
             ts, user_id, cmd = log.decode().split("|")
             ts = datetime.strptime(ts, TIME_FORMAT)
             await conn.execute(
                 "INSERT INTO requests (timestamp, user_id, command) VALUES ($1, $2, $3)",
-                ts, int(user_id), cmd
-            )
-        else:
-            await asyncio.sleep(DUMP_FREQUENCY)
+                ts, int(user_id), cmd)
+
