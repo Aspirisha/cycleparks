@@ -5,10 +5,9 @@ from dataclasses import dataclass
 from asyncio import Queue
 from telegram import Bot, InputMediaPhoto, ReplyKeyboardMarkup
 
-from analytics import log_send_failure
+from .analytics import log_send_failure
 
 
-message_queue = Queue()
 logger = logging.getLogger(__name__)
 
 
@@ -34,7 +33,7 @@ class MediaGroupMessage(OutgoingMessage):
     media: list[InputMediaPhoto]
 
 
-async def message_sender(bot: Bot):
+async def message_sender(message_queue: Queue, bot: Bot):
     while True:
         msg = await message_queue.get()
         try:

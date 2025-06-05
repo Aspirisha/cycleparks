@@ -16,195 +16,26 @@ Press Ctrl-C on the command line or send a signal to the process to stop the bot
 """
 
 import asyncpg
-import json
 import logging
-import numpy as np
-import os
-import urllib.request
 import yaml
+
+from asyncio import Queue
 from functools import partial
-from typing import List, Dict
-
-from sklearn.neighbors import BallTree
-
-from telegram import BotCommand, Update, KeyboardButton, ReplyKeyboardMarkup, InputMediaPhoto
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
-
-from analytics import flush_logs, log_command, flush_failures_to_postgres
-from message_queue import message_sender, message_queue, TextMessage, LocationMessage, MediaGroupMessage
+from typing import Dict
 
 
-class LocationsInfo:
-    location_data: List
-    location_tree: BallTree
-    DEFAULT_LOCATIONS_LIMIT = 3
-    MAX_LOCATIONS_LIMIT = 10
+from telegram import BotCommand, Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
-    @classmethod
-    def read_cycle_parks(cls, cycleparks_url: str):
-        cache_file_name = 'cycleparks.json'
-        if not os.path.exists(cache_file_name):
-            logger.info(
-                'Cycle park json is not cached; loading from %s',
-                cycleparks_url)
-            req = urllib.request.Request(
-                cycleparks_url, headers={
-                    'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req) as url:
-                data = json.load(url)
-                cls.location_data = data['features']
-                logger.info(
-                    'Loaded cycle parks data from %s; Saving to %s',
-                    cycleparks_url,
-                    cache_file_name)
-                with open(cache_file_name, 'w') as f:
-                    json.dump(data, f, indent=2)
-
-        else:
-            with open(cache_file_name) as f:
-                cls.location_data = json.load(f)['features']
-        cls.location_data = [
-            entry for entry in cls.location_data if entry['properties']['PRK_HANGAR'] != 'TRUE']
-        coords = np.radians(
-            [list(reversed(entry["geometry"]['coordinates'])) for entry in cls.location_data])
-        cls.location_tree = BallTree(coords, metric="haversine")
-
-    @classmethod
-    def get_nearest_cycleparks(cls, lat, lon, k=DEFAULT_LOCATIONS_LIMIT):
-        target_rad = np.radians([lat, lon]).reshape(1, -1)
-        distances, indices = cls.location_tree.query(target_rad, k=k)
-        distances_meters = distances[0] * 6371000  # Convert to meters
-        closest_entries = [cls.location_data[i] for i in indices[0]]
-        return closest_entries, distances_meters
-
-
-# Enable logging
-
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
+from cycleparks.analytics import flush_logs, flush_failures_to_postgres
+from cycleparks.handlers import start, help_command, limit_locations, show_nearest_cycleparks
+from cycleparks.locations_info import LocationsInfo
+from cycleparks.message_queue import message_sender
 
 # set higher logging level for httpx to avoid all GET and POST requests
 # being logged
 
-logging.getLogger("httpx").setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a message when the command /start is issued."""
-    user = update.effective_user
-    button = KeyboardButton(text="Share Location 📍", request_location=True)
-    keyboard = ReplyKeyboardMarkup(
-        [[button]], resize_keyboard=True, one_time_keyboard=True)
-    message_queue.put_nowait(
-        TextMessage(chat_id=update.effective_chat.id,
-                    text=f"Hi {user.name}! I can help you find the nearest cycle parks. "
-                         f"Please share your location to get started.",
-                    reply_markup=keyboard))
-
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = (
-        "🤖 *Available Commands:*\n"
-        "/start - Start the bot\n"
-        "/limit <number> - Set number of returned closest parking locations\n"
-        "/help - Show this help message\n"
-    )
-    message_queue.put_nowait(
-        TextMessage(chat_id=update.effective_chat.id,
-                    text=help_text))
-
-
-async def limit_locations(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    args = context.args  # This gives you the list of arguments after the command
-    current_limit = context.user_data.get(
-        "locations_limit", LocationsInfo.DEFAULT_LOCATIONS_LIMIT)
-    if not args:
-        message_queue.put_nowait(
-            TextMessage(chat_id=update.effective_chat.id,
-                        text=f"Send me preferred number of closest locations to show, e.g. /limit 3. Current limit is {current_limit}."))
-        return
-    try:
-        locations_limit = int(args[0])
-        if locations_limit > LocationsInfo.MAX_LOCATIONS_LIMIT:
-            context.user_data["locations_limit"] = LocationsInfo.MAX_LOCATIONS_LIMIT
-            message_queue.put_nowait(
-                TextMessage(chat_id=update.effective_chat.id,
-                            text=f"❌ Location limit is set to {LocationsInfo.MAX_LOCATIONS_LIMIT} - this is maximum!"))
-        elif locations_limit < 1:
-            context.user_data["locations_limit"] = 1
-            message_queue.put_nowait(
-                TextMessage(chat_id=update.effective_chat.id,
-                            text=f"✅ Location limit is set to 1 - this is minimum!"))
-        else:
-            context.user_data["locations_limit"] = locations_limit
-            message_queue.put_nowait(
-                TextMessage(chat_id=update.effective_chat.id,
-                            text=f"✅ You set locations limit to {locations_limit}"))
-    except ValueError:
-        message_queue.put_nowait(
-            TextMessage(chat_id=update.effective_chat.id,
-                        text=f"❌ That doesn't look like a valid number. Locations limit is {current_limit}."))
-
-def ordinal(n):
-    if str(n)[-1] == '1':
-        return str(n) + 'st'
-    elif str(n)[-1] == '2':
-        return str(n) + 'nd'
-    elif str(n)[-1] == '3':
-        return str(n) + 'rd'
-    else:
-        return str(n) + 'th'
-
-
-async def show_nearest_cycleparks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.application.create_task(
-        log_command(
-            update.effective_user.id,
-            "show_nearest_cycleparks"))
-    user_location = update.message.location
-    if not user_location:
-        logger.info('Received no user location: %s', user_location)
-        return
-    logger.info('Received user location %s', user_location)
-    lat = user_location.latitude
-    lon = user_location.longitude
-
-    locations_limit = context.user_data.get(
-        "locations_limit", LocationsInfo.DEFAULT_LOCATIONS_LIMIT)
-    nearest_parkings, distances = LocationsInfo.get_nearest_cycleparks(
-        lat, lon, k=locations_limit)
-
-    logger.info(
-        'Retrieved %d nearest cycle parks within distances %r',
-        len(nearest_parkings),
-        distances)
-    for i, (distance, parking_info) in enumerate(
-            zip(distances, nearest_parkings)):
-        message_queue.put_nowait(
-            TextMessage(
-                chat_id=update.effective_chat.id,
-                text=f"{ordinal(i+1)} nearest cycle parking is within {distance:.0f} meters:\n"))
-        coords = parking_info["geometry"]["coordinates"]
-        message_queue.put_nowait(
-            LocationMessage(
-                chat_id=update.effective_chat.id,
-                latitude=coords[1],
-                longitude=coords[0]
-            )
-        )
-        props = parking_info['properties']
-        media = [InputMediaPhoto(media=url)
-                 for url in [props.get('PHOTO1_URL'), props.get('PHOTO2_URL')]
-                 if url is not None]
-        if media:
-            message_queue.put_nowait(
-                MediaGroupMessage(
-                    chat_id=update.effective_chat.id,
-                    media=media
-                )
-            )
 
 
 async def setup_commands(app, postgres_config: Dict):
@@ -219,12 +50,18 @@ async def setup_commands(app, postgres_config: Dict):
         password=postgres_config['password'],
         database=postgres_config['database'],
         host=postgres_config['host'])
+    app.message_queue = Queue()
     app.create_task(flush_logs(db_pool))
     app.create_task(flush_failures_to_postgres(db_pool))
-    app.create_task(message_sender(app.bot))
+    app.create_task(message_sender(app.message_queue, app.bot))
 
 
 def main() -> None:
+    logging.basicConfig(
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    )
+    logging.getLogger("httpx").setLevel(logging.WARN)
+
     with open("config.yml") as f:
         config = yaml.load(f, Loader=yaml.SafeLoader)
 
