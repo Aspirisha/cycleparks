@@ -30,6 +30,7 @@ from telegram import BotCommand, Update, KeyboardButton, ReplyKeyboardMarkup, In
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from analytics import flush_logs, log_command
+from message_queue import message_sender, message_queue, TextMessage, LocationMessage, MediaGroupMessage
 
 
 class LocationsInfo:
@@ -89,17 +90,17 @@ logging.getLogger("httpx").setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# Define a few command handlers. These usually take the two arguments update and
-# context.
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
     user = update.effective_user
     button = KeyboardButton(text="Share Location 📍", request_location=True)
     keyboard = ReplyKeyboardMarkup(
         [[button]], resize_keyboard=True, one_time_keyboard=True)
-    await update.message.reply_text(f"Hi {user.name} Please share your location:",
-                                    reply_markup=keyboard)
+    message_queue.put_nowait(
+        TextMessage(chat_id=update.effective_chat.id,
+                    text=f"Hi {user.name}! I can help you find the nearest cycle parks. "
+                         f"Please share your location to get started.",
+                    reply_markup=keyboard))
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -109,12 +110,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/limit <number> - Set number of returned closest parking locations\n"
         "/help - Show this help message\n"
     )
-    await update.message.reply_text(help_text, parse_mode="Markdown")
-
-
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Echo the user message."""
-    await update.message.reply_text(update.message.text)
+    message_queue.put_nowait(
+        TextMessage(chat_id=update.effective_chat.id,
+                    text=help_text))
 
 
 async def limit_locations(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -122,21 +120,32 @@ async def limit_locations(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     current_limit = context.user_data.get(
         "locations_limit", LocationsInfo.DEFAULT_LOCATIONS_LIMIT)
     if not args:
-        await update.message.reply_text(f"Send me preferred number of closest locations to show, e.g. /limit 3. Current limit is {current_limit}.")
+        message_queue.put_nowait(
+            TextMessage(chat_id=update.effective_chat.id,
+                        text=f"Send me preferred number of closest locations to show, e.g. /limit 3. Current limit is {current_limit}."))
         return
     try:
         locations_limit = int(args[0])
         if locations_limit > LocationsInfo.MAX_LOCATIONS_LIMIT:
             context.user_data["locations_limit"] = LocationsInfo.MAX_LOCATIONS_LIMIT
-            await update.message.reply_text(f"✅ Location limit is set to {LocationsInfo.MAX_LOCATIONS_LIMIT} - this is maximum!")
+            message_queue.put_nowait(
+                TextMessage(chat_id=update.effective_chat.id,
+                            text=f"❌ Location limit is set to {LocationsInfo.MAX_LOCATIONS_LIMIT} - this is maximum!"))
         elif locations_limit < 1:
             context.user_data["locations_limit"] = 1
-            await update.message.reply_text(f"✅ Location limit is set to 1 - this is minimum!")
+            message_queue.put_nowait(
+                TextMessage(chat_id=update.effective_chat.id,
+                            text=f"✅ Location limit is set to 1 - this is minimum!"))
         else:
             context.user_data["locations_limit"] = locations_limit
-            await update.message.reply_text(f"✅ You set locations limit to {locations_limit}")
+            message_queue.put_nowait(
+                TextMessage(chat_id=update.effective_chat.id,
+                            text=f"✅ You set locations limit to {locations_limit}"))
     except ValueError:
-        await update.message.reply_text(f"❌ That doesn't look like a valid number. Locations limit is {current_limit}.")
+        message_queue.put_nowait(
+            TextMessage(chat_id=update.effective_chat.id,
+                        text=f"❌ That doesn't look like a valid number. Locations limit is {current_limit}."))
+
 
 
 async def show_nearest_cycleparks(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -163,19 +172,29 @@ async def show_nearest_cycleparks(update: Update, context: ContextTypes.DEFAULT_
         distances)
     for i, (distance, parking_info) in enumerate(
             zip(distances, nearest_parkings)):
-        await update.message.reply_text(f"{i+1}st nearest cycle parking is within {distance:.0f} meters:\n")
+        message_queue.put_nowait(
+            TextMessage(
+                chat_id=update.effective_chat.id,
+                text=f"{i+1}st nearest cycle parking is within {distance:.0f} meters:\n"))
         coords = parking_info["geometry"]["coordinates"]
-        await context.bot.send_location(
-            chat_id=update.effective_chat.id,
-            latitude=coords[1],
-            longitude=coords[0]
+        message_queue.put_nowait(
+            LocationMessage(
+                chat_id=update.effective_chat.id,
+                latitude=coords[1],
+                longitude=coords[0]
+            )
         )
         props = parking_info['properties']
         media = [InputMediaPhoto(media=url)
                  for url in [props.get('PHOTO1_URL'), props.get('PHOTO2_URL')]
                  if url is not None]
         if media:
-            await context.bot.send_media_group(chat_id=update.effective_chat.id, media=media)
+            message_queue.put_nowait(
+                MediaGroupMessage(
+                    chat_id=update.effective_chat.id,
+                    media=media
+                )
+            )
 
 
 async def setup_commands(app, postgres_config: Dict):
@@ -186,6 +205,7 @@ async def setup_commands(app, postgres_config: Dict):
     ]
     await app.bot.set_my_commands(commands)
     app.create_task(flush_logs(postgres_config))
+    app.create_task(message_sender(app.bot))
 
 
 def main() -> None:
