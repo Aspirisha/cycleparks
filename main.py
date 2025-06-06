@@ -28,7 +28,7 @@ from telegram import BotCommand, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from cycleparks.analytics import flush_logs, flush_failures_to_postgres
-from cycleparks.handlers import start, help_command, limit_locations, show_nearest_cycleparks
+from cycleparks.handlers import start, help_command, limit_locations, show_nearest_cycleparks, error_handler
 from cycleparks.locations_info import LocationsInfo
 from cycleparks.message_queue import message_sender
 
@@ -51,8 +51,9 @@ async def setup_commands(app, postgres_config: Dict):
         database=postgres_config['database'],
         host=postgres_config['host'])
     app.message_queue = Queue()
+    app.error_queue = Queue()
     app.create_task(flush_logs(db_pool))
-    app.create_task(flush_failures_to_postgres(db_pool))
+    app.create_task(flush_failures_to_postgres(db_pool, app.error_queue))
     app.create_task(message_sender(app.message_queue, app.bot))
 
 
@@ -83,6 +84,7 @@ def main() -> None:
             filters.LOCATION,
             show_nearest_cycleparks))
     # Run the bot until the user presses Ctrl-C
+    application.add_error_handler(error_handler)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

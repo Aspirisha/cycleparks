@@ -23,3 +23,11 @@ CREATE TABLE send_failures (
     count INTEGER NOT NULL,
     timestamp TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE TABLE errors (
+    id SERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ NOT NULL,
+    exception_type TEXT NOT NULL,
+    error_message TEXT NOT NULL,
+    update_str TEXT NOT NULL
+);

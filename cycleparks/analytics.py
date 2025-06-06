@@ -2,6 +2,7 @@ import asyncio
 import asyncpg
 import logging
 import redis.asyncio as redis
+from dataclasses import astuple
 from datetime import datetime
 
 r = redis.Redis()
@@ -27,7 +28,7 @@ async def log_send_failure(msg_type, error_message):
     await r.expire(key, 86400)  # 24 hours
 
 
-async def _flush_failures_to_postgres(db_pool: asyncpg.Pool):
+async def _flush_failures_to_postgres(db_pool: asyncpg.Pool, error_queue: asyncio.Queue):
     keys = await r.keys("failures|*")
     async with db_pool.acquire() as conn:
       results = []
@@ -40,17 +41,29 @@ async def _flush_failures_to_postgres(db_pool: asyncpg.Pool):
           error = parts[3]
           results.append((timestamp, msg_type, error, count))
           await r.delete(key)
-      logger.info("Flushing %d failures to Postgres", len(results))
+      logger.info("Flushing %d send failures to Postgres", len(results))
       await conn.executemany(
           "INSERT INTO send_failures (timestamp, message_type, error_message, count) VALUES ($1, $2, $3, $4)",
           results
       )
 
+      results = []
+      while not error_queue.empty():
+          try:
+              item = error_queue.get_nowait()
+              results.append(astuple(item))
+          except asyncio.QueueEmpty:
+              break
+      logger.info("Flushing %d unhandled errors to Postgres", len(results))
+      await conn.executemany(
+          "INSERT INTO errors (timestamp, exception_type, error_message, update_str) VALUES ($1, $2, $3, $4)",
+          results
+      )
 
-async def flush_failures_to_postgres(db_pool: asyncpg.Pool):
+async def flush_failures_to_postgres(db_pool: asyncpg.Pool, error_queue: asyncio.Queue):
     while True:
         try:
-            await _flush_failures_to_postgres(db_pool)
+            await _flush_failures_to_postgres(db_pool, error_queue)
         except Exception as e:
             logger.error("Flushing failed: %s", e)
         await asyncio.sleep(60)  # every minute

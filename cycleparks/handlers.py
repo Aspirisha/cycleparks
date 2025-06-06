@@ -1,4 +1,9 @@
+import json
 import logging
+import traceback
+from asyncio import Queue
+from datetime import datetime
+from dataclasses import dataclass
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, InputMediaPhoto
 from telegram.ext import ContextTypes
 
@@ -100,6 +105,16 @@ async def show_nearest_cycleparks(update: Update, context: ContextTypes.DEFAULT_
         'Retrieved %d nearest cycle parks within distances %r',
         len(nearest_parkings),
         distances)
+
+    if distances[0] > 1000:
+        context.application.message_queue.put_nowait(
+            TextMessage(
+                chat_id=update.effective_chat.id,
+                text=f"❗️ No cycle parks found within 1 km of your location."
+                     f" For now, only London cycle parks are supported. "
+            )
+        )
+        return
     for i, (distance, parking_info) in enumerate(
             zip(distances, nearest_parkings)):
         context.application.message_queue.put_nowait(
@@ -125,3 +140,31 @@ async def show_nearest_cycleparks(update: Update, context: ContextTypes.DEFAULT_
                     media=media
                 )
             )
+
+
+@dataclass
+class ErrorInfo:
+    timestamp: datetime
+    exception_type: str
+    error_message: str
+    update_str: str
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log the error and send a telegram message to notify the developer."""
+    # Log the error before we do anything else, so we can see it even if something breaks.
+    logger.error("Exception while handling an update:", exc_info=context.error)
+
+    # Build the message with some markup and additional information about what happened.
+    # You might need to add some logic to deal with messages longer than the 4096 character limit.
+    update_str = json.dumps(update.to_dict()) if isinstance(update, Update) else str(update)
+
+    context.application.error_queue.put_nowait(
+        ErrorInfo(
+            timestamp=datetime.now(),
+            exception_type=type(context.error).__name__,
+            error_message=str(context.error),
+            update_str=update_str,
+        )
+    )
+  
