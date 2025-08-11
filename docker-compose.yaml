@@ -1,0 +1,61 @@
+services:
+
+  db:
+    image: postgres
+    restart: always
+    # set shared memory limit when using docker compose
+    shm_size: 128mb
+    ports:
+      - "5432:5432"
+    # or set shared memory limit when deploy via swarm stack
+    #volumes:
+    #  - type: tmpfs
+    #    target: /dev/shm
+    #    tmpfs:
+    #      size: 134217728 # 128*2^20 bytes = 128Mb
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: example
+      POSTGRES_DB: cycleparks
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./initdb.sql:/docker-entrypoint-initdb.d/initdb.sql:ro
+
+  adminer:
+    image: adminer
+    restart: always
+    ports:
+      - 8080:8080
+
+  grafana:
+    image: grafana/grafana-enterprise
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    volumes:
+      - ./data/grafana:/var/lib/grafana
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data/redis:/data
+
+  # bot:
+  #   build: .
+  #   depends_on:
+  #     - redis
+  #     - db
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ./config.yml:/app/config.yml:ro
+  #     - ./cycleparks:/app/cycleparks
+  #     - ./main.py:/app/main.py:ro
+
+
+volumes:
+  postgres_data:
+  redis_data:
+  grafana_data:
