@@ -38,7 +38,21 @@ from cycleparks.message_queue import message_sender
 logger = logging.getLogger(__name__)
 
 
-async def setup_commands(app, postgres_config: Dict):
+class MyApplication(Application):
+    """
+    Custom Application class to add custom attributes.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.message_queue = Queue()
+        self.error_queue = Queue()
+
+    @classmethod
+    def builder(cls):
+        return super().builder().application_class(cls)
+
+
+async def setup_commands(app: MyApplication, postgres_config: Dict):
     commands = [
         BotCommand("start", "Start the bot"),
         BotCommand("limit", "Set limit of locations to show"),
@@ -50,8 +64,6 @@ async def setup_commands(app, postgres_config: Dict):
         password=postgres_config['password'],
         database=postgres_config['database'],
         host=postgres_config['host'])
-    app.message_queue = Queue()
-    app.error_queue = Queue()
     app.create_task(flush_logs(db_pool))
     app.create_task(flush_failures_to_postgres(db_pool, app.error_queue))
     app.create_task(message_sender(app.message_queue, app.bot))
@@ -71,7 +83,7 @@ def main() -> None:
                 len(LocationsInfo.location_data))
 
     # Create the Application and pass it your bot's token.
-    application = Application.builder() \
+    application = MyApplication.builder() \
         .token(config['token']) \
         .post_init(partial(setup_commands, postgres_config=config['postgres'])) \
         .build()
