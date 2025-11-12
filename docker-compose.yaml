@@ -31,6 +31,8 @@ services:
     image: grafana/grafana-enterprise
     container_name: grafana
     restart: unless-stopped
+    environment:
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
     ports:
       - '3000:3000'
     volumes:
@@ -38,24 +40,20 @@ services:
 
   redis:
     image: redis:7
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
       - ./data/redis:/data
 
-  # bot:
-  #   build: .
-  #   depends_on:
-  #     - redis
-  #     - db
-  #   restart: unless-stopped
-  #   volumes:
-  #     - ./config.yml:/app/config.yml:ro
-  #     - ./cycleparks:/app/cycleparks
-  #     - ./main.py:/app/main.py:ro
+  bot:
+    build: .
+    depends_on:
+      - redis
+      - db
+    restart: unless-stopped
+    volumes:
+      - ./config.yml:/app/config.yml:ro
+      - ./cycleparks:/app/cycleparks
+      - ./main.py:/app/main.py:ro
 
-
-volumes:
-  postgres_data:
-  redis_data:
-  grafana_data:
