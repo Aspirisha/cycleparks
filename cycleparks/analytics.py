@@ -1,9 +1,11 @@
 import asyncio
-import asyncpg
 import logging
 import redis.asyncio as redis
 from dataclasses import astuple
 from datetime import datetime
+
+from cycleparks.db import get_session
+from cycleparks.models import Error, Request, SendFailure
 
 r = redis.Redis(host="redis")
 logger = logging.getLogger(__name__)
@@ -28,62 +30,77 @@ async def log_send_failure(msg_type, error_message):
     await r.expire(key, 86400)  # 24 hours
 
 
-async def _flush_failures_to_postgres(
-    db_pool: asyncpg.Pool, error_queue: asyncio.Queue
-):
+async def _flush_failures_to_postgres(error_queue: asyncio.Queue):
     keys = await r.keys("failures|*")
-    async with db_pool.acquire() as conn:
-        results = []
+    send_failures = []
+    async with get_session() as session:
         for key in keys:
             count = int(await r.get(key))
-            # Parse key: failures|2025-06-04-17:30|photo|RateLimitExceeded
             parts = key.decode().split("|")
             timestamp = datetime.strptime(parts[1], SEND_FAILURE_TIME_FORMAT)
             msg_type = parts[2]
-            error = parts[3]
-            results.append((timestamp, msg_type, error, count))
+            error_message = parts[3]
+            send_failures.append(
+                SendFailure(
+                    timestamp=timestamp,
+                    message_type=msg_type,
+                    error_message=error_message,
+                    count=count,
+                )
+            )
             await r.delete(key)
-        logger.info("Flushing %d send failures to Postgres", len(results))
-        await conn.executemany(
-            "INSERT INTO send_failures (timestamp, message_type, error_message, count) VALUES ($1, $2, $3, $4)",
-            results,
-        )
 
-        results = []
+        logger.info("Flushing %d send failures to Postgres", len(send_failures))
+        if send_failures:
+            session.add_all(send_failures)
+
+        error_records = []
         while not error_queue.empty():
             try:
                 item = error_queue.get_nowait()
-                results.append(astuple(item))
+                error_records.append(
+                    Error(
+                        timestamp=item.timestamp,
+                        exception_type=item.exception_type,
+                        error_message=item.error_message,
+                        update_str=item.update_str,
+                    )
+                )
             except asyncio.QueueEmpty:
                 break
-        logger.info("Flushing %d unhandled errors to Postgres", len(results))
-        await conn.executemany(
-            "INSERT INTO errors (timestamp, exception_type, error_message, update_str) VALUES ($1, $2, $3, $4)",
-            results,
-        )
+
+        logger.info("Flushing %d unhandled errors to Postgres", len(error_records))
+        if error_records:
+            session.add_all(error_records)
+
+        await session.commit()
 
 
-async def flush_failures_to_postgres(db_pool: asyncpg.Pool, error_queue: asyncio.Queue):
+async def flush_failures_to_postgres(error_queue: asyncio.Queue):
     while True:
         try:
-            await _flush_failures_to_postgres(db_pool, error_queue)
+            await _flush_failures_to_postgres(error_queue)
         except Exception as e:
             logger.error("Flushing failed: %s", e)
-        await asyncio.sleep(60)  # every minute
+        await asyncio.sleep(60)
 
 
-async def flush_logs(db_pool: asyncpg.Pool):
+async def flush_logs():
     while True:
         log = await r.lpop("request_log_queue")
         if not log:
             await asyncio.sleep(DUMP_FREQUENCY)
             continue
-        async with db_pool.acquire() as conn:
-            ts, user_id, cmd = log.decode().split("|")
-            ts = datetime.strptime(ts, TIME_FORMAT)
-            await conn.execute(
-                "INSERT INTO requests (timestamp, user_id, command) VALUES ($1, $2, $3)",
-                ts,
-                int(user_id),
-                cmd,
+
+        ts, user_id, cmd = log.decode().split("|")
+        ts = datetime.strptime(ts, TIME_FORMAT)
+
+        async with get_session() as session:
+            session.add(
+                Request(
+                    timestamp=ts,
+                    user_id=int(user_id),
+                    command=cmd,
+                )
             )
+            await session.commit()

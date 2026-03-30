@@ -1,2 +1,3 @@
 token: ""
 cycleparks_url: ""
+admin_ids: []  # List of admin user IDs who can approve/reject cyclepark submissions, e.g. [123456789, 987654321]
